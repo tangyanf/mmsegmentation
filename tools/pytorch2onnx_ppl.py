@@ -77,7 +77,6 @@ def _demo_mm_inputs(input_shape, num_classes):
 def pytorch2onnx(model,
                  input_shape,
                  opset_version=11,
-                 show=False,
                  output_file='tmp.onnx'):
     """Export Pytorch model to ONNX model and verify the outputs are same
     between Pytorch and ONNX.
@@ -142,10 +141,11 @@ def pytorch2onnx(model,
     print(output_tensors['output_mms'])
 
     if not np.allclose(pytorch_result, output_tensors['output_mms'][0]):
-        raise ValueError(
-            'The outputs are different between Pytorch and ONNX')
-    print('The outputs are same between Pytorch and ONNX')
+        print ('The outputs are different between Pytorch and ONNX')
+        return False
 
+    print('The outputs are same between Pytorch and ONNX')
+    return True
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Convert MMSeg to ONNX')
@@ -220,112 +220,109 @@ def parse_urls(readme_path):
     return url_li
 
 
-if __name__ == '__main__':
-    args = parse_args()
+def run_mms( cases):#cases ):
+    #default
+    input_shape = [1,3,256,256]
 
-    print('arg done')
-    if len(args.shape) == 1:
-        input_shape = (1, 3, args.shape[0], args.shape[0])
-    elif len(args.shape) == 2:
-        input_shape = (
-            1,
-            3,
-        ) + tuple(args.shape)
-    else:
-        raise ValueError('invalid input shape')
+    checkpoint_dir = './checkpoints'
+    config_path = cases
 
-    print('shape done')
-    #download pth
-    #if args.checkpoint:
-    #    load_checkpoint(segmentor, args.checkpoint, map_location='cpu')
+    cfg = mmcv.Config.fromfile(config_path)
+    cfg.model.pretrained = None
 
+    # build the model and load checkpoint
+    segmentor = build_segmentor(
+        cfg.model, train_cfg=None, test_cfg=cfg.test_cfg)
+    # convert SyncBN to BN
+    segmentor = _convert_batchnorm(segmentor)
+
+    config_dir, fname = osp.split(cases)
+    _, algo_name = osp.split(config_dir)
+    key, _ = osp.splitext(fname)
+    parent_dir = osp.join(checkpoint_dir, algo_name)
+    os.makedirs(parent_dir, exist_ok=True)
+    checkpoint_path = osp.join(parent_dir, key + '.pth')
+
+    # print('checkpoint_path ', checkpoint_path,parent_dir, key)
+    if not osp.exists(checkpoint_path):
+        readme_path = osp.join(config_dir, 'README.md')
+        if not osp.exists(readme_path):
+            warnings.warn(f'No README.md found in {config_dir}, \
+                       could not get checkpoint for {config_path}')
+            return False
+
+        url_li = parse_urls(readme_path)
+        for url_liss in url_li:
+            print('url_liss ', url_liss)
+
+        # reverse
+        url_li.reverse()
+        url_maps = {u.split('/')[-2]: u for u in url_li}
+        for urlss in url_maps:
+            print('urlss ', urlss)
+        url = None
+        print('key ', key)
+        if key in url_maps:
+            url = url_maps[key]
+        else:
+            for u in url_li:
+                if key in u:
+                    url = u
+                    break
+        if url is None:
+            warnings.warn(f'Failed to get checkpoint url for {config_path}')
+            print('download url failed!')
+            return False
+        print('url ', url, checkpoint_path)
+        success = download_from_url(url, checkpoint_path)
+        if not success:
+            print('download url failed!')
+            return False
+
+    # conver model to onnx file
+    load_checkpoint(segmentor, checkpoint_path, map_location='cpu')
+
+    return pytorch2onnx(
+        segmentor,
+        input_shape,
+        opset_version=11)
+
+def get_cases(folder_lists):
     files = list_all_files("../configs")
-
     testcases = []
+
     for cases in files:
         flag_base = 0
         for folders in cases.split('/'):
-            # print(folders)
             if folders == '_base_':
                 flag_base = 1
         if flag_base == 0:
             if cases.split('.')[-1] == 'py':
                 testcases.append(cases)
-    print('cases done')
 
-    # print(testcases)
-    results = []
-    header = [
-        'algo_name', 'model_name', 'status', 'exported_onnx', 'error',
-        'message'
-    ]
-    i = 0
-    test_folders = ['fcn', 'pspnet', 'deeplabv3', 'deeplabv3plus']
+    test_folders = folder_lists.split(' ')
+
+    results=[]
+
+    f = open("temp1234.txt", "w")
+    #test_folders = ['fsaf', 'mask_rcnn', 'faster_rcnn', 'retinanet']
     for cases in testcases:
         if cases.split('/')[2] not in test_folders:
             continue
 
-        checkpoint_dir = args.checkpoint
-        config_path = cases
+        results.append(cases)
+        f.write(cases)
+        f.write('\n')
 
-        cfg = mmcv.Config.fromfile(config_path)
-        cfg.model.pretrained = None
+    f.close()
+    #print(results)
+    return results
 
-        # build the model and load checkpoint
-        segmentor = build_segmentor(
-            cfg.model, train_cfg=None, test_cfg=cfg.test_cfg)
-        # convert SyncBN to BN
-        segmentor = _convert_batchnorm(segmentor)
+if __name__ == '__main__':
+    #args = parse_args()
 
+    testcases = get_cases('fcn pspnet deeplabv3 deeplabv3plus')
 
-        config_dir, fname = osp.split(cases)
-        _, algo_name = osp.split(config_dir)
-        key, _ = osp.splitext(fname)
-        parent_dir = osp.join(checkpoint_dir, algo_name)
-        os.makedirs(parent_dir, exist_ok=True)
-        checkpoint_path = osp.join(parent_dir, key + '.pth')
-
-        #print('checkpoint_path ', checkpoint_path,parent_dir, key)
-        if not osp.exists(checkpoint_path):
-            readme_path = osp.join(config_dir, 'README.md')
-            if not osp.exists(readme_path):
-                warnings.warn(f'No README.md found in {config_dir}, \
-                        could not get checkpoint for {config_path}')
-                continue
-            url_li = parse_urls(readme_path)
-            for url_liss in url_li:
-                print('url_liss ', url_liss)
-
-            #reverse
-            url_li.reverse()
-            url_maps = {u.split('/')[-2]: u for u in url_li}
-            for urlss in url_maps:
-                print('urlss ', urlss)
-            url = None
-            print('key ', key)
-            if key in url_maps:
-                url = url_maps[key]
-            else:
-                for u in url_li:
-                    if key in u:
-                        url = u
-                        break
-            if url is None:
-                warnings.warn(f'Failed to get checkpoint url for {config_path}')
-                continue
-            print('url ', url,checkpoint_path )
-            success = download_from_url(url, checkpoint_path)
-            if not success:
-                continue
-
-
-        # conver model to onnx file
-        load_checkpoint(segmentor, checkpoint_path, map_location='cpu')
-
-
-        pytorch2onnx(
-                segmentor,
-                input_shape,
-                opset_version=args.opset_version,
-                show=args.show,
-                output_file=args.output_file)
+    for cases in testcases:
+        print (cases)
+        print (run_mms(cases))
